@@ -21,8 +21,11 @@ import time
 from socket import *
 import struct
 import traceback
+import os
+import shutil
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
+logging.basicConfig(filename='/tmp/3DWiFiSendFile.log', encoding='utf-8', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 import re
@@ -36,7 +39,7 @@ class WiFiDevice():
     # TODO: put the codes in a separate file for ease of reading, etc
     # TODO: better documentation on what codes do
     CMD_PRINTING_STATUS = "M27" # reports on printing status
-    CMD_STARTWRITE_SD = "M28 "  # start writing datagrams to SD
+    CMD_STARTWRITE_SD = "M28"  # start writing datagrams to SD
     CMD_ENDWRITE_SD = "M29 "    # stop writing datagrams to SD
     CMD_GETFILELIST = "M20 "    # SD card file list. "M20 'P/<subdirectory>'"  second part is optional, root otherwise
     CMD_DELETE_FILE_SD = "M30 "  # requires filename arguement
@@ -44,10 +47,10 @@ class WiFiDevice():
     CMD_STATUS = "M115 "        # printer board manufacturer / firmware
     CMD_MSTATUS = "M119 "
     CMD_BED_INFO = "M4000 "
-    CMD_PRINTER_INFO = "M4001 " # printer bed info
+    CMD_PRINTER_INFO = "M4001" # printer bed info
     CMD_FIRMWARE = "M4002 "
     CMD_OFF = "M4003 "
-    CMD_PRINT_SD = "M6030 "
+    CMD_PRINT_SD = "M6030"
 
     PORT = 3000
     # TODO: find this in the windows qidi software install and refer to it
@@ -55,7 +58,7 @@ class WiFiDevice():
     # TODO: and remove the .exe from git
     VC_COMPRESS = ".\VC_compress_gcode.exe"
     if platform.system() == 'Darwin':  # for MacOS.  wish python had proper ternary operators....
-        VC_COMPRESS = "/Applications/QIDI-Print.app//Contents/MacOS/VC_compress_gcode_MAC"
+        VC_COMPRESS = "/Applications/QIDI-Print-5.6.10.app//Contents/MacOS/VC_compress_gcode_MAC"
     CONNECT_TIMEOUT = 5
 
     def __init__(self):
@@ -64,8 +67,8 @@ class WiFiDevice():
         self.BUFSIZE = 256 * 5
         self.RECVBUF = 256 * 5
         self.gcodeFile = 'data.gcode'
-        self.fileName = 'data.gcode.tz'
-        self.dirPath = ''
+        #self.fileName = 'data.gcode.tz'
+        self.dirPath = '/tmp/' # Place to store tempary files like the .gz file # 11/11/2021 CWA
         self.sock = socket(AF_INET, SOCK_DGRAM)
         self.sock.setsockopt(SOL_SOCKET, SO_BROADCAST, 1)
         self.sock.setblocking(0) # note: experimental, default is 1
@@ -84,35 +87,37 @@ class WiFiDevice():
 
     # TODO: check to see if file already exists, and recover if it does
     def sendStartWriteSd(self):
-        cmd = self.CMD_STARTWRITE_SD + self.fileName
+        #cmd = self.CMD_STARTWRITE_SD + " " + self.fileName
+        cmd = self.CMD_STARTWRITE_SD +  " " + self.compressFileName
         logger.info("Start write to SD: " + cmd)
         self.sock.sendto(self.encodeCmd(cmd), (self.ipaddr, self.PORT))
         message, address = self.sock.recvfrom(self.RECVBUF)
         message = message.decode('utf-8','replace')
-        logger.info("Start write to SD result: " + message)
+        logger.info("Start write to SD command result: " + message)
         return
 
     # TODO: check if file is correct bytes, etc on SD after transfer
     def sendEndWriteSd(self):
-        cmd = self.CMD_ENDWRITE_SD + self.fileName
-        logger.info("End write to SD: " + cmd)
+        cmd = self.CMD_ENDWRITE_SD + self.compressFileName
+        logger.info("Sending End write to SD command: " + cmd)
         self.sock.sendto(self.encodeCmd(cmd), (self.ipaddr, self.PORT))
         message, address = self.sock.recvfrom(self.RECVBUF)
         message = message.decode('utf-8','replace')
-        logger.info("End write to SD result: " + message)
+        logger.info(" command results: " + message)
+        logger.info("Sent End write to SD command")
         return
 
     def sendCmd(self, cmd):
         #cmd = self.CMD_GETFILELIST
-        logger.info("sending: " + cmd)
+        logger.info("Sending command: " + cmd)
         self.sock.sendto(self.encodeCmd(cmd), (self.ipaddr, self.PORT))
         message, address = self.sock.recvfrom(self.RECVBUF)
         message = message.decode('utf-8','replace')
-        logger.info("Get list of files result: " + message)
+        logger.info("  command result: " + message)
+        logger.info("Sent command: " + cmd)
         return
 
     def addCheckSum(self, data, seekPos):
-
         seekArray = struct.pack('>I', seekPos)
 
         check_sum = 0
@@ -138,8 +143,7 @@ class WiFiDevice():
         return dataArray
 
     def sendFileChunk(self, buff, seekPos):
-
-        logger.info("File Position: " + str(seekPos))
+        logger.info("  Seek Pos: " + str(seekPos))
         tmpArray = bytearray(buff)
         tmpSize = len(tmpArray)
         if tmpSize <= 0:
@@ -157,14 +161,15 @@ class WiFiDevice():
 
         message, address = self.sock.recvfrom(self.RECVBUF)
         message = message.decode('utf-8','replace')
-        logger.info("Sending File Chunk result: " +  message)
+        logger.info("  3D Printer Result: " +  message)
 
         return
 
-
     def sendFile(self):
+        logger.info("File is being sent to printer: " + self.compressFileName)
 
-        with open(self.fileName, 'rb', buffering=1) as fp:
+        # with open(self.fileName, 'rb', buffering=1) as fp: # removed buffering 11/11/2021 CWA
+        with open(self.compressFileName, 'rb') as fp:
             while True:
                 seekPos = fp.tell()
                 chunk = fp.read(self.BUFSIZE)
@@ -173,11 +178,11 @@ class WiFiDevice():
 
                 self.sendFileChunk(chunk, seekPos)
 
-        logger.info("End write SendFile ")
         fp.close()
 
-        return
+        logger.info("File sent to printer: " + self.compressFileName)
 
+        return
 
     def dataCompressThread(self):
         logger.info("Compressing Gcode File")
@@ -221,11 +226,17 @@ class WiFiDevice():
                                 s_z_max = _[3]
                         elif id == 'U':
                             self._file_encode = value.replace("'","")
+
+                if os.path.exists(self.compressFileName):
+                    logger.info("Deleting file: " + self.compressFileName)
+                    os.remove(self.compressFileName)
+
                 cmd = path.normpath(self.VC_COMPRESS) + " \"" + self.gcodeFile + "\" " + x_mm_per_step + " " + y_mm_per_step + " " + z_mm_per_step + " " + e_mm_per_step\
                          + ' \"' + path.normpath(".") + '\" ' + s_x_max + " " + s_y_max + " " + s_z_max + " " + s_machine_type
-                logger.info(cmd)
+                logger.info("Running compress command: " + cmd)
                 ret = subprocess.Popen(cmd,stdout=subprocess.PIPE,shell=True)
                 logger.info(ret.stdout.read().decode("utf-8", 'ignore'))
+                logger.info("Compress command completed and created file: " + self.compressFileName)
                 break
             except timeout:
                 tryCnt += 1
@@ -239,15 +250,20 @@ class WiFiDevice():
                 break
 
     def startPrint(self):
+        logger.info("Sending comand to print 3D model: " + self.compressFileName)
         self.sock.settimeout(2)
         try:
             #cmd = self.CMD_PRINT_SD + '":' + self.fileName + '" I1'  # I1 option purpose is unknown? try removing?
-            cmd = 'M6030 ":' + self.fileName + '" I1'
+            cmd = 'M6030 ":' + self.compressFileName + '" I1'
+            logger.info("Sending comand: " + cmd)
             self.sock.sendto(self.encodeCmd(cmd), (self.ipaddr, self.PORT))
             message, address = self.sock.recvfrom(self.RECVBUF)
+            fMessage = message.decode('utf-8','replace')
+            logger.info("  3D Printer Result: " +  fMessage)
         except:
-            logger.error("Serious problems starting the print:")
+            logger.error("Serious problems starting the print! Exec Traceback below:")
             traceback.print_exc()
+        logger.info("Sent comand to print 3D model")
 
     def getPrinterInfo(self):
         self.sock.settimeout(2)
@@ -280,22 +296,40 @@ def ReadFileChunk(filename, startPos, endPos):
 
 if __name__ == '__main__':
     printDev = WiFiDevice()
-    printDev.dirPath = os.path.dirname(os.path.realpath(__file__))
+    logger.info("---- Script has started ----")
+    # printDev.dirPath = os.path.dirname(os.path.realpath(__file__)) # We will move to /tmp - 11/11/2021 CWA
     os.chdir(printDev.dirPath)
     printDev.ipaddr = sys.argv[1]
     printDev.name = 'Xpro'  # TODO: this should be detected at initialization instead of hardcoded
     printDev.gcodeFile = sys.argv[2]
-    logger.info("Printer Info\r\n------------------")
+    printDev.gcodeJustFile = os.path.basename(printDev.gcodeFile)
+    printDev.filePath = os.path.basename(printDev.gcodeFile)
+    printDev.compressFileName = printDev.gcodeJustFile + '.tz'
+
+    logger.info("---- 3D Printer Info ----")
     logger.info("board/firmware info: " + printDev.getPrinterInfo())
     logger.info("firmware version: " + printDev.getFirmwareInfo())
-    printDev.fileName = printDev.gcodeFile + '.tz'   
-    logger.info('File 1: ' +  printDev.gcodeFile + 'File 2: ' + printDev.fileName)
+    logger.info('3D Printer name: ' + printDev.name)
+    logger.info('IP address: ' + printDev.ipaddr)
+
+    logger.info("---- Local System Info ----")
+    logger.info('Working Dir: ' +  printDev.dirPath)
+    logger.info('File to compress and send: ' +  printDev.gcodeFile)
+    logger.info('Compress file name: ' + printDev.compressFileName)
+
+    logger.info("---- Run Details ----")
     printDev.dataCompressThread()
     time.sleep(2)
-    logger.info('3D Printer ' + printDev.name + ' IP address: ' + printDev.ipaddr)
     printDev.sendStartWriteSd()
     time.sleep(2)
     printDev.sendFile()
+    time.sleep(1)
     printDev.sendEndWriteSd()
+
+    printDev.sendCmd(printDev.CMD_GETFILELIST)
+
     if len(sys.argv) >= 4 and sys.argv[3] == 'yes':
+        time.sleep(1)
         printDev.startPrint()
+
+    logger.info("---- Script has completed ----")
